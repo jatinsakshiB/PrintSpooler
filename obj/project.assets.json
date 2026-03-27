@@ -245,11 +245,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/Users/jatin/Desktop/projects/others/rudraksh925/RudrakshPrintSpooler/RudrakshPrintSpooler.csproj",
-      "projectName": "RudrakshPrintSpooler",
-      "projectPath": "/Users/jatin/Desktop/projects/others/rudraksh925/RudrakshPrintSpooler/RudrakshPrintSpooler.csproj",
+      "projectUniqueName": "/Users/jatin/Desktop/projects/others/rudraksh925/PrintSpooler/PrintSpooler.csproj",
+      "projectName": "PrintSpooler",
+      "projectPath": "/Users/jatin/Desktop/projects/others/rudraksh925/PrintSpooler/PrintSpooler.csproj",
       "packagesPath": "/Users/jatin/.nuget/packages/",
-      "outputPath": "/Users/jatin/Desktop/projects/others/rudraksh925/RudrakshPrintSpooler/obj/",
+      "outputPath": "/Users/jatin/Desktop/projects/others/rudraksh925/PrintSpooler/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "/Users/jatin/.nuget/NuGet/NuGet.Config"

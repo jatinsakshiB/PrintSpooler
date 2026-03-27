@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace RudrakshPrintSpooler
+namespace PrintSpooler
 {
     public class RawPrinterHelper
     {
