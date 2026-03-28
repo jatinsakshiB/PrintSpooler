@@ -44,7 +44,7 @@ namespace PrintSpooler
                 DOCINFOA di = new DOCINFOA();
                 bool bSuccess = false;
 
-                di.pDocName = "Rudraksh TSPL Job";
+                di.pDocName = "Rudraksh TSPL/ZPL Job";
                 di.pDataType = "RAW";
 
                 if (OpenPrinter(szPrinterName.Normalize(), out hPrinter, IntPtr.Zero))

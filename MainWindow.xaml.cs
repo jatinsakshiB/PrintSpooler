@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using RestSharp;
 using Newtonsoft.Json;
+using System.IO;
 
 namespace PrintSpooler
 {
@@ -15,15 +16,101 @@ namespace PrintSpooler
         private DispatcherTimer _pollTimer;
         private bool _isPolling = false;
 
+        private readonly string _settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "spooler_settings.json");
+
         public MainWindow()
         {
             InitializeComponent();
             LoadPrinters();
+            LoadSettings();
 
             _pollTimer = new DispatcherTimer();
             _pollTimer.Interval = TimeSpan.FromSeconds(5);
-            _pollTimer.Tick += async (s, e) => await PollPrintQueue();
-            LogMessage("Print Spooler Initialized. Please select a printer and start polling.");
+            _pollTimer.Tick += async (s, e) => {
+                await PollPrintQueue();
+                SaveSettings(); // Save state during polling to ensure it's remembered
+            };
+            
+            LogMessage("Print Spooler Initialized.");
+        }
+
+        private void LoadSettings()
+        {
+            try
+            {
+                if (File.Exists(_settingsPath))
+                {
+                    string json = File.ReadAllText(_settingsPath);
+                    var settings = JsonConvert.DeserializeObject<SpoolerSettings>(json);
+                    if (settings != null)
+                    {
+                        ApiUrlBox.Text = settings.ApiUrl;
+                        if (!string.IsNullOrEmpty(settings.Printer))
+                        {
+                            foreach (var item in PrinterComboBox.Items)
+                            {
+                                if (item.ToString() == settings.Printer)
+                                {
+                                    PrinterComboBox.SelectedItem = item;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (settings.IsPolling)
+                        {
+                            _isPolling = true;
+                            UpdatePollButtonState();
+                            _pollTimer = new DispatcherTimer();
+                            _pollTimer.Interval = TimeSpan.FromSeconds(5);
+                            _pollTimer.Tick += async (s, e) => {
+                                await PollPrintQueue();
+                                SaveSettings();
+                            };
+                            _pollTimer.Start();
+                            LogMessage("Resumed background polling from last session.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Failed to load settings: {ex.Message}");
+            }
+        }
+
+        private void SaveSettings()
+        {
+            try
+            {
+                var settings = new SpoolerSettings
+                {
+                    ApiUrl = ApiUrlBox.Text,
+                    Printer = PrinterComboBox.SelectedItem?.ToString() ?? "",
+                    IsPolling = _isPolling
+                };
+                string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(_settingsPath, json);
+            }
+            catch { }
+        }
+
+        private void UpdatePollButtonState()
+        {
+            if (_isPolling)
+            {
+                PollButton.Content = "Stop Background Polling";
+                PollButton.Background = new SolidColorBrush(Colors.DarkRed);
+                PollButton.Foreground = new SolidColorBrush(Colors.White);
+                StatusLog.Text = "Status: Polling started...";
+            }
+            else
+            {
+                PollButton.Content = "Start Background Polling";
+                PollButton.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#022c22"));
+                PollButton.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#d4af37"));
+                StatusLog.Text = "Status: Polling stopped.";
+            }
         }
 
         private void LogMessage(string msg)
@@ -48,24 +135,19 @@ namespace PrintSpooler
         private void PollButton_Click(object sender, RoutedEventArgs e)
         {
             _isPolling = !_isPolling;
+            UpdatePollButtonState();
+            
             if (_isPolling)
             {
-                PollButton.Content = "Stop Background Polling";
-                PollButton.Background = new SolidColorBrush(Colors.DarkRed);
-                PollButton.Foreground = new SolidColorBrush(Colors.White);
-                StatusLog.Text = "Status: Polling started...";
                 LogMessage("Started polling API every 5 seconds.");
                 _pollTimer.Start();
             }
             else
             {
-                PollButton.Content = "Start Background Polling";
-                PollButton.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#022c22"));
-                PollButton.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#d4af37"));
-                StatusLog.Text = "Status: Polling stopped.";
                 LogMessage("Stopped polling API.");
                 _pollTimer.Stop();
             }
+            SaveSettings();
         }
 
         private async Task PollPrintQueue()
@@ -125,7 +207,7 @@ namespace PrintSpooler
         {
             if (string.IsNullOrWhiteSpace(item.tspl_data))
             {
-                LogMessage($"Job {item.id} had empty TSPL data. Skipping.");
+                LogMessage($"Job {item.id} had empty TSPL/ZPL data. Skipping.");
                 return;
             }
 
@@ -140,9 +222,16 @@ namespace PrintSpooler
                 return;
             }
 
-            LogMessage($"Sending TSPL data for job {item.id} to {printerName}.");
+            LogMessage($"Sending TSPL/ZPL data for job {item.id} to {printerName}.");
             RawPrinterHelper.SendStringToPrinter(printerName, item.tspl_data);
         }
+    }
+
+    public class SpoolerSettings
+    {
+        public string ApiUrl { get; set; } = string.Empty;
+        public string Printer { get; set; } = string.Empty;
+        public bool IsPolling { get; set; } = false;
     }
 
     public class QueenPrintItem
