@@ -8,30 +8,115 @@ using System.Windows.Threading;
 using RestSharp;
 using Newtonsoft.Json;
 using System.IO;
+using System.Windows.Forms; // Required for NotifyIcon
+using Microsoft.Win32;      // Required for Registry
+using System.Diagnostics;   // Required for Process.Start
+using System.Text;
+using Application = System.Windows.Application;
+using MessageBox = System.Windows.MessageBox;
 
 namespace PrintSpooler
 {
     public partial class MainWindow : Window
     {
         private DispatcherTimer _pollTimer;
+        private DispatcherTimer _uiTimer;
+        private NotifyIcon _notifyIcon;
         private bool _isPolling = false;
+        private int _jobsToday = 0;
+        private DateTime _startTime;
+        private bool _isExitForced = false;
 
         private readonly string _settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "spooler_settings.json");
+        private readonly string _logDirPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
 
         public MainWindow()
         {
             InitializeComponent();
+            _startTime = DateTime.Now;
+            
+            EnsureLogDirectory();
             LoadPrinters();
             LoadSettings();
+            InitializeTrayIcon();
+            CheckStartupStatus();
 
             _pollTimer = new DispatcherTimer();
             _pollTimer.Interval = TimeSpan.FromSeconds(5);
             _pollTimer.Tick += async (s, e) => {
                 await PollPrintQueue();
-                SaveSettings(); // Save state during polling to ensure it's remembered
             };
+
+            _uiTimer = new DispatcherTimer();
+            _uiTimer.Interval = TimeSpan.FromSeconds(1);
+            _uiTimer.Tick += (s, e) => UpdateUIStatus();
+            _uiTimer.Start();
+
+            LogMessage("Print Spooler v2.0 Initialized.");
             
-            LogMessage("Print Spooler Initialized.");
+            if (_isPolling) {
+                _pollTimer.Start();
+                LogMessage("Auto-resumed polling session.");
+            }
+        }
+
+        private void EnsureLogDirectory()
+        {
+            if (!Directory.Exists(_logDirPath))
+                Directory.CreateDirectory(_logDirPath);
+        }
+
+        private void InitializeTrayIcon()
+        {
+            _notifyIcon = new NotifyIcon();
+            _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName);
+            _notifyIcon.Text = "Rudraksh Print Spooler - Running";
+            _notifyIcon.Visible = true;
+            _notifyIcon.DoubleClick += (s, e) => ShowWindow();
+
+            var contextMenu = new ContextMenuStrip();
+            contextMenu.Items.Add("Show Spooler", null, (s, e) => ShowWindow());
+            contextMenu.Items.Add("-");
+            contextMenu.Items.Add("Exit Spooler", null, (s, e) => ExitApplication());
+            _notifyIcon.ContextMenuStrip = contextMenu;
+        }
+
+        private void ShowWindow()
+        {
+            this.Show();
+            this.WindowState = WindowState.Normal;
+            this.Activate();
+        }
+
+        private void ExitApplication()
+        {
+            _isExitForced = true;
+            _notifyIcon.Visible = false;
+            _notifyIcon.Dispose();
+            Application.Current.Shutdown();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!_isExitForced && MinimizeToTrayCheckBox.IsChecked == true)
+            {
+                e.Cancel = true;
+                this.Hide();
+                _notifyIcon.ShowBalloonTip(2000, "Still Running", "Print Spooler is still active in the system tray.", ToolTipIcon.Info);
+            }
+            base.OnClosing(e);
+        }
+
+        private void LoadPrinters()
+        {
+            foreach (string printer in PrinterSettings.InstalledPrinters)
+            {
+                PrinterComboBox.Items.Add(printer);
+            }
+            if (PrinterComboBox.Items.Count > 0)
+                PrinterComboBox.SelectedIndex = 0;
+            else
+                LogMessage("WARNING: No printers found installed on this system.");
         }
 
         private void LoadSettings()
@@ -45,6 +130,8 @@ namespace PrintSpooler
                     if (settings != null)
                     {
                         ApiUrlBox.Text = settings.ApiUrl;
+                        _isPolling = settings.IsPolling;
+
                         if (!string.IsNullOrEmpty(settings.Printer))
                         {
                             foreach (var item in PrinterComboBox.Items)
@@ -56,20 +143,7 @@ namespace PrintSpooler
                                 }
                             }
                         }
-
-                        if (settings.IsPolling)
-                        {
-                            _isPolling = true;
-                            UpdatePollButtonState();
-                            _pollTimer = new DispatcherTimer();
-                            _pollTimer.Interval = TimeSpan.FromSeconds(5);
-                            _pollTimer.Tick += async (s, e) => {
-                                await PollPrintQueue();
-                                SaveSettings();
-                            };
-                            _pollTimer.Start();
-                            LogMessage("Resumed background polling from last session.");
-                        }
+                        UpdatePollButtonState();
                     }
                 }
             }
@@ -95,6 +169,26 @@ namespace PrintSpooler
             catch { }
         }
 
+        private void CheckStartupStatus()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false))
+                {
+                    AutoStartCheckBox.IsChecked = key.GetValue("RudrakshPrintSpooler") != null;
+                }
+            }
+            catch { }
+        }
+
+        private void UpdateUIStatus()
+        {
+            TimeSpan uptime = DateTime.Now - _startTime;
+            SessionTimeLabel.Text = $"Uptime: {uptime:hh\\:mm\\:ss}";
+            JobsCountLabel.Text = $"Jobs today: {_jobsToday}";
+            ClockText.Text = DateTime.Now.ToString("HH:mm:ss");
+        }
+
         private void UpdatePollButtonState()
         {
             if (_isPolling)
@@ -102,7 +196,7 @@ namespace PrintSpooler
                 PollButton.Content = "Stop Background Polling";
                 PollButton.Background = new SolidColorBrush(Colors.DarkRed);
                 PollButton.Foreground = new SolidColorBrush(Colors.White);
-                StatusLog.Text = "Status: Polling started...";
+                StatusLog.Text = "Status: Polling active...";
             }
             else
             {
@@ -116,20 +210,21 @@ namespace PrintSpooler
         private void LogMessage(string msg)
         {
             string time = DateTime.Now.ToString("HH:mm:ss");
-            LogBox.AppendText($"[{time}] {msg}\n");
-            LogBox.ScrollToEnd();
-        }
+            string entry = $"[{time}] {msg}";
+            
+            // UI Update
+            LogBox.Dispatcher.BeginInvoke(() => {
+                LogBox.AppendText(entry + "\n");
+                LogBox.ScrollToEnd();
+            });
 
-        private void LoadPrinters()
-        {
-            foreach (string printer in PrinterSettings.InstalledPrinters)
+            // File Logging
+            try
             {
-                PrinterComboBox.Items.Add(printer);
+                string fileName = DateTime.Now.ToString("yyyy-MM-dd") + ".log";
+                File.AppendAllText(Path.Combine(_logDirPath, fileName), entry + Environment.NewLine);
             }
-            if (PrinterComboBox.Items.Count > 0)
-                PrinterComboBox.SelectedIndex = 0;
-            else
-                LogMessage("WARNING: No printers found installed on this system.");
+            catch { }
         }
 
         private void PollButton_Click(object sender, RoutedEventArgs e)
@@ -139,12 +234,12 @@ namespace PrintSpooler
             
             if (_isPolling)
             {
-                LogMessage("Started polling API every 5 seconds.");
+                LogMessage("Manual start: Polling API every 5 seconds.");
                 _pollTimer.Start();
             }
             else
             {
-                LogMessage("Stopped polling API.");
+                LogMessage("Manual stop: Polling API halted.");
                 _pollTimer.Stop();
             }
             SaveSettings();
@@ -166,24 +261,29 @@ namespace PrintSpooler
                     var items = JsonConvert.DeserializeObject<List<QueenPrintItem>>(response.Content);
                     if (items != null && items.Count > 0)
                     {
-                        StatusLog.Text = $"Status: Printed {items.Count} jobs at {DateTime.Now:T}";
+                        StatusLog.Text = $"Status: Processing {items.Count} jobs...";
                         LogMessage($"Received {items.Count} print jobs from queue.");
                         foreach (var item in items)
                         {
                             PrintItem(item);
                             await MarkAsPrinted(item.id);
+                            _jobsToday++;
                         }
                     }
                 }
                 else if (!response.IsSuccessful)
                 {
-                    StatusLog.Text = $"Status: Error polling API ({DateTime.Now:T}) - Code: {response.StatusCode}";
+                    StatusLog.Text = $"Status: API Error ({DateTime.Now:T}) - {response.StatusCode}";
+                }
+                else
+                {
+                    StatusLog.Text = $"Status: Polling (Idle at {DateTime.Now:T})";
                 }
             }
             catch (Exception ex)
             {
                 StatusLog.Text = $"Status: Connection Error ({DateTime.Now:T})";
-                LogMessage($"ERROR: {ex.Message}");
+                LogMessage($"POLL ERROR: {ex.Message}");
             }
         }
 
@@ -194,37 +294,76 @@ namespace PrintSpooler
                 string baseUrl = ApiUrlBox.Text.Replace("/pending", "");
                 var client = new RestClient(baseUrl);
                 var request = new RestRequest($"/{id}/status", Method.Put);
-                var body = new { status = "printed" };
-                request.AddJsonBody(body);
+                request.AddJsonBody(new { status = "printed" });
                 var resp = await client.ExecuteAsync(request);
                 if (resp.IsSuccessful)
-                    LogMessage($"Marked job {id} as printed.");
+                    LogMessage($"Marked job {id} as printed on server.");
             }
-            catch { }
+            catch (Exception ex) { LogMessage($"MARK ERROR: {ex.Message}"); }
         }
 
         private void PrintItem(QueenPrintItem item)
         {
             if (string.IsNullOrWhiteSpace(item.tspl_data))
             {
-                LogMessage($"Job {item.id} had empty TSPL/ZPL data. Skipping.");
+                LogMessage($"Job {item.id} skipped: Empty data.");
                 return;
             }
 
             string printerName = "";
             Application.Current.Dispatcher.Invoke(() => {
                 printerName = PrinterComboBox.SelectedItem?.ToString() ?? "";
+                PreviewBox.Text = item.tspl_data; // Update diagnostics preview
             });
             
             if (string.IsNullOrEmpty(printerName))
             {
-                LogMessage("ERROR: No printer selected.");
+                LogMessage("CRITICAL ERROR: No printer selected. Job failed.");
                 return;
             }
 
-            LogMessage($"Sending TSPL/ZPL data for job {item.id} to {printerName}.");
-            RawPrinterHelper.SendStringToPrinter(printerName, item.tspl_data);
+            LogMessage($"Printing Job {item.id} [{item.tspl_data.Length} bytes] to {printerName}.");
+            bool success = RawPrinterHelper.SendStringToPrinter(printerName, item.tspl_data);
+            
+            if (success)
+                LogMessage($"Job {item.id} successfully sent to printer spooler.");
+            else
+                LogMessage($"FAILED to print Job {item.id}. Check printer status.");
         }
+
+        private void AutoStartCheckBox_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
+                {
+                    if (AutoStartCheckBox.IsChecked == true)
+                        key.SetValue("RudrakshPrintSpooler", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
+                    else
+                        key.DeleteValue("RudrakshPrintSpooler", false);
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Failed to update startup registry: " + ex.Message); }
+        }
+
+        private void ClearLog_Click(object sender, RoutedEventArgs e) => LogBox.Clear();
+
+        private void OpenLogFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try { Process.Start("explorer.exe", _logDirPath); }
+            catch { }
+        }
+
+        private void CopyScript_Click(object sender, RoutedEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(PreviewBox.Text))
+            {
+                System.Windows.Clipboard.SetText(PreviewBox.Text);
+                MessageBox.Show("Print script copied to clipboard.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        private void SimulatePrint_Click(object sender, RoutedEventArgs e) { /* For future testing */ }
     }
 
     public class SpoolerSettings

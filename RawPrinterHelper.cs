@@ -66,17 +66,15 @@ namespace PrintSpooler
                 }
                 return bSuccess;
             }
-            // If on Mac/Linux during development, just return true so it thinks it worked.
             return true;
         }
 
         public static bool SendStringToPrinter(string szPrinterName, string szString)
         {
-            IntPtr pBytes;
-            Int32 dwCount;
-            dwCount = szString.Length;
-            pBytes = Marshal.StringToCoTaskMemAnsi(szString);
-            bool success = SendBytesToPrinter(szPrinterName, pBytes, dwCount);
+            byte[] bytes = Encoding.UTF8.GetBytes(szString);
+            IntPtr pBytes = Marshal.AllocCoTaskMem(bytes.Length);
+            Marshal.Copy(bytes, 0, pBytes, bytes.Length);
+            bool success = SendBytesToPrinter(szPrinterName, pBytes, bytes.Length);
             Marshal.FreeCoTaskMem(pBytes);
             return success;
         }
